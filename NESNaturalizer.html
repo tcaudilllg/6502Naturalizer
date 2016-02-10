@@ -1,6 +1,6 @@
 <HTML><Head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-<script src="io.js"></script>
+<!-- NOTE: this document REQUIRES Mozilla Firefox (or compatible) 14.0 or earlier! -->
 <script>
 
 // NES Naturalizer
@@ -1430,6 +1430,167 @@ function parseLabels (data) {
 	
 }
 
+
+function writeFile (fileData, filter) {
+
+	const nsIFilePicker = Components.interfaces.nsIFilePicker;
+
+	var filePicker = Components.classes["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
+	filePicker.init(window, "", nsIFilePicker.modeSave);
+	if (filter == "") {
+		filePicker.appendFilters(nsIFilePicker.filterAll);
+	}
+	else {
+		filePicker.appendFilter("*." + filter);
+	}
+
+	var selection = filePicker.show();
+	if (selection == nsIFilePicker.returnOK || selection == nsIFilePicker.returnReplace) {
+	
+		var file = Components.classes["@mozilla.org/file/local;1"]  
+		.createInstance(Components.interfaces.nsILocalFile);  
+  
+		file.initWithPath( filePicker.file.path ); 	
+		file.createUnique( Components.interfaces.nsIFile.NORMAL_FILE_TYPE, 600);
+            
+		var stream = Components.classes["@mozilla.org/network/safe-file-output-stream;1"]
+		.createInstance(Components.interfaces.nsIFileOutputStream);
+	
+		stream.init(file, 0x04 | 0x08 | 0x20, 0600, 0); // readwrite, create, truncate
+            
+		stream.write(fileData, fileData.length);
+
+		if (stream instanceof Components.interfaces.nsISafeOutputStream) {
+			stream.finish();
+		} else {
+			stream.close();
+		}
+	}
+}
+
+
+function readFile (filePath)
+{
+	// "filePath" is a string containing the complete path of the file to be read.
+	// This function returns a string containing the data of the read file.
+
+	this.netscape.security.PrivilegeManager.enablePrivilege('UniversalXPConnect');
+
+	var file = Components.classes["@mozilla.org/file/local;1"]  
+	.createInstance(Components.interfaces.nsILocalFile);
+	
+	var homeDirPath = document.URL.substring(8, document.URL.lastIndexOf("/") + 1);
+	homeDirPath = homeDirPath.replace(/[/]/g, "\\");
+	//alert(homeDirPath);
+	
+	file.initWithPath( homeDirPath + filePath );
+	if ( file.exists() == false ) {
+		alert("File '" + homeDirPath + filePath + "' does not exist");
+	}
+
+	var incoming = Components.classes["@mozilla.org/network/file-input-stream;1"]
+	.createInstance(Components.interfaces.nsIFileInputStream);
+	incoming.init(file, 0x01, 00004, null);
+
+	var cache = Components.classes["@mozilla.org/binaryinputstream;1"]
+	.createInstance(Components.interfaces.nsIBinaryInputStream);
+	cache.setInputStream(incoming);
+
+	return cache.readBytes(cache.available());
+}
+
+
+function saveFile (fileData, filter)
+{
+	// "fileData" is a string containing the data to write. "filter" is the file's default extension.
+	// This function allows the user to save a file with the save-as dialogue box.
+	
+	// This first segment allows that a file be picked with the open/save dialogue window.
+	this.netscape.security.PrivilegeManager.enablePrivilege('UniversalXPConnect');
+	const nsIFilePicker = Components.interfaces.nsIFilePicker;
+
+	var filePicker = Components.classes["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
+	filePicker.init(window, "", nsIFilePicker.modeSave);
+	if (filter == "")
+	{
+		filePicker.appendFilters(nsIFilePicker.filterAll);
+	}
+	else
+	{
+		filePicker.appendFilter("*." + filter, "*." + filter);
+	}
+
+	var selection = filePicker.show();
+	if (selection == nsIFilePicker.returnOK || selection == nsIFilePicker.returnReplace)
+	{
+		// Append the designated extension if necessary
+		if (filePicker.file.path.indexOf("." + filter) == -1) filePicker.file.path += "." + filter;
+		
+		// This is the actual code to write the file.
+	
+		var file = Components.classes["@mozilla.org/file/local;1"]  
+		.createInstance(Components.interfaces.nsILocalFile);  
+  
+		file.initWithPath( filePicker.file.path );
+		
+		if (file.exists) file.remove(null);
+		file.create( Components.interfaces.nsIFile.NORMAL_FILE_TYPE, 600);
+            
+		var stream = Components.classes["@mozilla.org/network/safe-file-output-stream;1"]
+		.createInstance(Components.interfaces.nsIFileOutputStream);
+	
+		stream.init(file, 0x02 | 0x08 | 0x20, 0666, 0); // readwrite, create, truncate
+            
+		stream.write(fileData, fileData.length);
+
+		if (stream instanceof Components.interfaces.nsISafeOutputStream) {
+			stream.finish();
+		} else {
+			stream.close();
+		}
+	}
+}
+
+
+function openFile (filter)
+{
+	// "filter" is a string specifying which files extensions to show in the open dialogue box.
+	// This function allows the user to open a file with the open dialogue box. It returns a string with the file's contents.
+	
+	// This first segment allows that a file be picked with the open/save dialogue window.
+
+	this.netscape.security.PrivilegeManager.enablePrivilege('UniversalXPConnect');
+	const nsIFilePicker = Components.interfaces.nsIFilePicker;
+
+	var filePicker = Components.classes["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
+	filePicker.init(window, "", nsIFilePicker.modeOpen);
+	if (filter == "")
+	{
+		filePicker.appendFilters(nsIFilePicker.filterAll);
+	}
+	else
+	{
+		filePicker.appendFilter("*." + filter, "*." + filter);
+	}
+
+	var selection = filePicker.show();
+	if (selection == nsIFilePicker.returnOK || selection == nsIFilePicker.returnReplace)
+	{
+		// This is the actual code to read the file.
+	
+		var file = filePicker.file;
+		
+		var incoming = Components.classes["@mozilla.org/network/file-input-stream;1"]
+		.createInstance(Components.interfaces.nsIFileInputStream);
+		incoming.init(file, -1, -1, false);
+
+		var cache = Components.classes["@mozilla.org/binaryinputstream;1"]
+		.createInstance(Components.interfaces.nsIBinaryInputStream);
+		cache.setInputStream(incoming);
+
+		return cache.readBytes(cache.available());
+	}
+}
 
 </script>
 </head>
