@@ -1,3 +1,1477 @@
-# NESNaturalizer
-Articulates the arithemetic structure of programs for the 6502
-yep
+<HTML><Head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<script src="io.js"></script>
+<script>
+
+// NES Naturalizer
+// original author: tcaudilllg (http://www.facebook.com/Anthony.Carl.Caudill)
+// based on JSNES and vNES. released under GPL 3.0 (http://www.gnu.org/licenses/gpl-3.0.en.html)
+
+// Thanks to Tauwasser, Dwedit, DarknessSavior, UglyJoe, dn, furrykef
+
+output = "";
+realAddr = 0;
+debug = "";
+progData = "";
+progBanks = [];
+charBanks = [];
+progBankCount = 0;
+charBankCount = 0;
+mapper = 0;
+
+subsReadout = "";
+jumpsReadout = "";
+mode = "";
+labels = [];
+
+
+function readHeader () {
+
+	var opdata = openFile('nes');
+	
+	progBankCount = opdata.charCodeAt(4);
+	charBankCount = opdata.charCodeAt(5);
+
+	mapperLow = opdata.charCodeAt(6) >>> 4;
+	mapperHigh = opdata.charCodeAt(7) & 240;
+	mapper = mapperLow + mapperHigh;
+	
+	vRAMx4 = opdata.charCodeAt(6) & 8;
+	if (vRAMx4) VRAMx4.checked = true;
+	trainer = opdata.charCodeAt(6) & 4;
+	if (trainer) Trainer.checked = true;
+	battery = opdata.charCodeAt(6) & 2;
+	if (battery) Battery.checked = true;
+	vMirror = opdata.charCodeAt(6) & 1;
+	if (vMirror) {
+		VMirror.checked = true;
+	}
+	else {
+		HMirror.checked = true;
+	}
+
+	ProgBanks.value = progBankCount;
+	CharBanks.value = charBankCount;
+	Mapper.value = mapper;
+
+	opdata = opdata.substr(16);
+	
+	var progLimit = 16384 * progBankCount;
+	for (var index = 0; index < progLimit; index += 16384) {
+		progBanks.push(opdata.substr(index, 16384));
+	}
+	progData = opdata.substr(0, progLimit);
+	opdata = opdata.substr(progLimit);
+	var charLimit = 8192 * charBankCount;
+	for (var index = 0; index < charLimit; index += 8192) {
+		charBanks.push(opdata.substr(index, 8192));
+	}
+
+	resetTarget = progData.charCodeAt(progData.length - 4) | (progData.charCodeAt(progData.length - 3) << 8);
+	ProgramStartAddress.value = resetTarget.toString(16);
+}
+
+
+
+function naturalizeCode () {
+	
+	// furrykef: Games with mappers will load the last bank of PRG into $e000 if it's an 8k bank,
+	// $c000 if it's a 16k bank, or $8000 if it's a 32k bank
+	
+	output = "";
+	
+	rangeStart = parseInt(Start.value, 16);
+	//rangeEnd = parseInt(End.value, 16);
+
+	if (rangeStart == "") rangeStart = 0;
+	//if (rangeEnd == "") rangeEnd = 0xFF;
+	
+	if (rangeStart == NaN || rangeStart >= progData.length) return;
+
+	REG_PC = rangeStart;
+	
+	//if (REG_PC >= rangeEnd) return;
+	
+	//alert("naturalizing...");
+	
+	X = 0;
+	Y = 0;
+	accumulator = 0;
+	carry = 0;
+	
+	realAddr = 0;
+	line = "";
+	jumpsReadout = "";
+	subsReadout = "";
+	
+	processing = true;
+	
+	//userDocAddresses = processAddressList(parseScript(UserDocAddresses.value));
+	
+//    while (REG_PC <= rangeEnd) {
+	  while (processing) {
+
+		opinf = progData.charCodeAt(REG_PC);
+		//alert("opcode + addrMode = " + opinf);
+
+        // parse the operator into high and low nibbles.
+		lowNibble = opinf & 15;
+		highNibble = (opinf & 240) / 16;
+		
+		//alert("addrMode = " + addrMode);
+		
+		//alert("opcode only: " + opinf);
+		
+		//alert("Program counter: " + REG_PC);
+		line = REG_PC + "|$" + REG_PC.toString(16).toUpperCase();
+        
+		realAddr = 0;
+		addr = "";
+
+		//alert(REG_PC + " high:" + highNibble + " low: " + lowNibble);
+		
+		// Calculate the addressing mode by testing for specific high/low nibble combinations of the opcode.
+        if ((lowNibble == 8)
+		 || ((lowNibble == 10) && (highNibble >= 8))
+	     || ((lowNibble == 0) && ((highNibble == 0) || (highNibble == 4) || (highNibble == 6)))) {
+			// Implied
+			debug += (REG_PC + " is implied");
+			REG_PC++;
+		}
+		else
+        if (((lowNibble == 0) && ((highNibble == 10) || (highNibble == 12) || (highNibble == 14)))
+		 || (lowNibble == 2)
+		 || ((lowNibble == 9) && ((highNibble % 2 == 0) && (highNibble != 8)))) {
+			// Immediate mode. The value is given after the opcode.
+			debug += (REG_PC + " is immediate");
+			load("immediate");
+			REG_PC += 2;
+		}
+		else
+        if (((lowNibble == 4) || (lowNibble == 5) || (lowNibble == 6)) && (highNibble % 2 == 0)) {
+			// Zero Page mode. Use the address given after the opcode, 
+			// but without high byte.
+			debug += (REG_PC + " is 0 page");
+			load("zero_page");
+			REG_PC += 2;
+		}
+		else
+		if ((((lowNibble == 4) || (lowNibble == 5)) && (highNibble % 2 == 1))
+		 || ((lowNibble == 6) && (highNibble != 9) && (highNibble != 11) && (highNibble % 2 == 1))) {
+			// Zero Page Indexed mode, X as index. Use the address given 
+			// after the opcode, then add the
+			// X register to it to get the final address.
+			debug += (REG_PC + " is 0 page X");
+			load("zero_page_w/X");
+			REG_PC += 2;
+		}
+		else
+		if ((lowNibble == 6) && ((highNibble == 9) || (highNibble == 11))) {
+			// Zero Page Indexed mode, Y as index. Use the address given 
+			// after the opcode, then add the
+			// Y register to it to get the final address.
+			debug += (REG_PC + " is 0 page Y");
+			load("zero_page_w/Y");
+			REG_PC += 2;
+		}
+		else
+		if ((lowNibble == 12) && (highNibble == 6)) {
+			// Absolute Indirect mode. Find the 16-bit address 
+			// starting at the given location. The value is the contents of that 
+			// address.
+			debug += (REG_PC + " is indirect");
+			load("indirect");
+			REG_PC += 3;
+		}
+		else
+		if ((lowNibble == 1) && (highNibble % 2 == 0)) {
+			// Pre-indexed Indirect mode. Find the 16-bit address 
+			// starting at the given location plus
+			// the current X register. The value is the contents of that 
+			// address.
+			debug += (REG_PC + " is indirect X");
+			load("indirect_w/X");
+			REG_PC += 2;
+		}
+		else
+		if ((lowNibble == 1) && (highNibble % 2 == 1)) {
+			// Pre-indexed Indirect mode. Find the 16-bit address 
+			// starting at the given location plus
+			// the current Y register. The value is the contents of that 
+			// address.
+			debug += (REG_PC + " is indirect Y");
+			load("indirect_w/Y");
+			REG_PC += 2;
+		}
+		else
+		if (lowNibble == 0 && (highNibble % 2 == 1)) {
+			// Relative mode.
+			debug += (REG_PC + " is relative");
+			load("relative");
+			
+			REG_PC += 2;
+		}
+		else
+		if (((lowNibble == 0) && (highNibble == 2))
+		 || (((lowNibble == 12) || (lowNibble == 14)) && (highNibble % 2 == 0))
+		 || ((lowNibble == 13) && (highNibble % 2 == 0))
+		 || ((lowNibble == 12) && (highNibble % 2 == 0) && (highNibble != 0) && (highNibble != 6))) {
+			// Absolute mode. Use the two bytes following the opcode as 
+			// an address.
+			debug += (REG_PC + " is absolute");
+			load("absolute");
+			REG_PC += 3;
+		}
+		else
+        if (((lowNibble == 12) && (highNibble == 12))
+		 || ((lowNibble == 13) && (highNibble % 2 == 1))
+         || ((lowNibble == 15) && (highNibble % 2 == 1) && (highNibble != 9) && (highNibble != 11))) {
+           // Absolute Indexed Mode, X as index. Same as zero page 
+           // indexed, but with the high byte.
+			debug += (REG_PC + " is absolute X");
+			load("absolute_w/X");
+			REG_PC += 3;
+		}
+		else
+		if (((lowNibble == 9) && (highNibble % 2 == 0)) || ((lowNibble == 14) && (highNibble == 11))) {
+			// Absolute Indexed Mode, Y as index. Same as zero page 
+			// indexed, but with the high byte.
+			debug += (REG_PC + " is absolute Y");
+			load("absolute_w/Y");
+			REG_PC += 3;
+		}
+		else
+		if ((lowNibble == 10) && ((highNibble == 0) || (highNibble == 2)
+		 || (highNibble == 4) || (highNibble == 6))) {
+			// accumulator
+			debug += (REG_PC + " is accumulator");
+			load("accumulator");
+			REG_PC++;
+		}
+		else { // Must be a dud... don't let that stop us...
+			debug += (REG_PC + " is nothing");
+			REG_PC++;
+		}
+
+        
+        // Wrap around for addresses above 0xFFFF:
+
+        // ----------------------------------------------------------------------------------------------------
+        // Decode & execute instruction:
+        // ----------------------------------------------------------------------------------------------------
+
+        // This should be compiled to a jump table.
+		if (opinf == 0x69 || opinf == 0x65 || opinf == 0x75 || opinf == 0x6D
+		 || opinf == 0x7D || opinf == 0x79 || opinf == 0x61 || opinf == 0x71) {
+			// *******
+			// * ADC *
+			// *******
+
+			// Add with carry.
+			if (mode == "decompile") {
+				accumulator += addr;
+			}
+			else {
+				readout("Add " + addr + " to Accumulator (+ 1 if carry set)");
+			}
+			
+		}
+		else
+		if (opinf == 0x29 || opinf == 0x25 || opinf == 0x35 || opinf == 0x2D
+		 || opinf == 0x3D || opinf == 0x39 || opinf == 0x21 || opinf == 0x31) {
+			// *******
+			// * AND *
+			// *******
+
+			// AND memory with accumulator.
+			if (mode == "decompile") {
+				//readout("Accumulator (" + accumulator + ") AND " + addr);
+				readout(accumulator + " AND " + addr);
+			}
+			else {
+				readout("AND operation between " + addr + " and Accumulator (stored to Accumulator)");
+			}
+		}
+		else
+		if (opinf == 0x0A || opinf == 0x06 || opinf == 0x16 || opinf == 0x0E
+		 || opinf == 0x1E) {
+			// *******
+			// * ASL *
+			// *******
+
+			// Shift left one bit
+			
+			if (mode == "emulate") {
+				//readout("Accumulator (" + accumulator + ") AND " + addr);
+				if (addrMode == "accumulator") { // ADDR_ACC == 4
+					readout(accumulator + " << " + "1 = " + (accumulator << 1));
+				}else{
+					readout(addr + " << " + "1 = " + (memory[addr] << 1));
+				}
+			}
+			if (mode == "decompile") {
+				//readout("Accumulator (" + accumulator + ") AND " + addr);
+				if (addrMode == "accumulator") { // ADDR_ACC == 4
+					readout(accumulator + " << 1");
+				}else{
+					readout(addr + " << 1");
+				}
+			}
+			else {
+			
+				if (addrMode == "accumulator") { // ADDR_ACC == 4
+
+					readout("Shift Accumulator left one bit");
+
+				}else{
+
+					readout("Shift " + addr + " left one bit");
+				}
+			}
+		}
+		else
+		if (opinf == 0x90) {
+
+			// *******
+			// * BCC *
+			// *******
+
+			// Branch on carry clear
+
+			if (mode == "decompile") {
+				readout("if carry = false then goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if carry bit is 0");
+			}
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0xB0) {
+
+			// *******
+			// * BCS *
+			// *******
+
+			// Branch on carry set
+
+			if (mode == "decompile") {
+				readout("if carry then goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if carry bit is 1");
+			}
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0xF0) {
+
+			// *******
+			// * BEQ *
+			// *******
+
+			// Branch on zero
+			if (mode == "decompile") {
+				readout("if " + accumulator + " = 0 then goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if last operation evaluated to 0");
+			}
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0x24 || opinf == 0x2C) {
+
+			// *******
+			// * BIT *
+			// *******
+
+			/*
+			temp == this.load(addr);
+			this.F_SIGN == (temp>>7)&1;
+			this.F_OVERFLOW == (temp>>6)&1;
+			temp &= this.REG_ACC;
+			this.F_ZERO == temp;*/
+			readout("?");
+		}
+		else
+		if (opinf == 0x30) {
+
+			// *******
+			// * BMI *
+			// *******
+
+			// Branch on negative result
+
+			if (mode == "decompile") {
+				readout("if " + accumulator + " < 0 then goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if last operation returned negative");
+			}
+			jumpsReadout += line;
+			
+		}
+		else
+		if (opinf == 0xD0) {
+
+			// *******
+			// * BNE *
+			// *******
+
+			// Branch on not zero
+			if (mode == "decompile") {
+				readout("if " + accumulator + " != 0 then goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if last operation did not evaluate to 0");
+			}
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0x10) {
+
+			// *******
+			// * BPL *
+			// *******
+
+			// Branch on positive result
+			if (mode == "decompile") {
+				readout("if " + accumulator + " >= 0 then goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if last operation returned positive");
+			}
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0) {
+
+			// *******
+			// * BRK *
+			// *******
+			
+			readout("Break; push CPU status and program counter to the stack");
+			//jumpsReadout += line;
+		}
+		else
+		if (opinf == 0x50) {
+
+			// *******
+			// * BVC *
+			// *******
+
+			// Branch on overflow clear
+			if (mode == "decompile") {
+				readout("if overflow = false goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if overflow bit is 0");
+			}
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0x70) {
+
+			// *******
+			// * BVS *
+			// *******
+
+			// Branch on overflow set
+			if (mode == "decompile") {
+				readout("if overflow goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr() + " if overflow bit is 1");
+			}
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0x18) {
+
+			// *******
+			// * CLC *
+			// *******
+
+			// Clear carry flag
+			if (mode == "decompile") {
+				readout("RESET Carry");
+			}
+			else {
+				readout("Set carry bit to 0");
+			}
+		}
+		else
+		if (opinf == 0xD8) {
+
+			// *******
+			// * CLD *
+			// *******
+
+			// Clear decimal flag
+			if (mode == "decompile") {
+				readout("Decimals OFF");
+			}
+			else {
+				readout("Disable decimal mode");
+			}
+		}
+		else
+		if (opinf == 0x58) {
+
+			// *******
+			// * CLI *
+			// *******
+
+			// Clear interrupt flag
+			if (mode == "decompile") {
+				readout("Interrupts ON");
+			}
+			else {
+				readout("Enable interrupts");
+			}
+		}
+		else
+		if (opinf == 0xB8) {
+
+			// *******
+			// * CLV *
+			// *******
+
+			// Clear overflow flag
+			if (mode == "decompile") {
+				readout("RESET overflow");
+			}
+			else {
+				readout("Clear overflow flag bit");
+			}
+		}
+		else
+		if (opinf == 0xC9 || opinf == 0xC5 || opinf == 0xD5 || opinf == 0xCD
+		 || opinf == 0xDD || opinf == 0xD9 || opinf == 0xC1 || opinf == 0xD1) {
+
+			// *******
+			// * CMP *
+			// *******
+
+			// Compare memory and accumulator:
+			if (mode == "decompile") {
+				readout("if " + accumulator + " >= " + addr + " then: SET carry :else: RESET carry");
+			}
+			else {
+				readout("Test: set carry to 1 if Accumulator >= " + addr + "; else 0");
+			}
+		}
+		else
+		if (opinf == 0xE0 || opinf == 0xE4 || opinf == 0xEC) {
+
+			// *******
+			// * CPX *
+			// *******
+
+			// Compare memory and index X:
+			if (mode == "decompile") {
+				readout("if " + X + " >= " + addr + " then: SET carry :else: RESET carry");
+			}
+			else {
+				readout("Test: set carry to 1 if X-index >= " + addr + "; else 0");
+			}
+		}
+		else
+		if (opinf == 0xC0 || opinf == 0xC4 || opinf == 0xCC) {
+
+			// *******
+			// * CPY *
+			// *******
+
+			// Compare memory and index Y:
+			if (mode == "decompile") {
+				readout("if " + Y + " >= " + addr + " then: SET carry :else: RESET carry");
+			}
+			else {
+				readout("Test: set carry to 1 if Y-index >= " + addr + "; else 0");
+			}
+		}
+		else
+		if (opinf == 0xC6 || opinf == 0xD6 || opinf == 0xCE || opinf == 0xDE) {
+
+			// *******
+			// * DEC *
+			// *******
+
+			// Decrement memory by one:
+			if (mode == "decompile") {
+				readout(addr + " - 1");
+			}
+			else {
+				readout(addr + " - 1");
+			}
+		}
+		else
+		if (opinf == 0xCA) {
+
+			// *******
+			// * DEX *
+			// *******
+
+			// Decrement index X by one:
+			if (mode == "decompile") {
+				readout(X + " - 1");
+			}
+			else {
+				readout("X-index - 1");
+			}
+		}
+		else
+		if (opinf == 0x88) {
+
+			// *******
+			// * DEY *
+			// *******
+
+			// Decrement index Y by one:
+			if (mode == "decompile") {
+				readout(Y + " - 1");
+			}
+			else {
+				readout("Y-index - 1");
+			}
+		}
+		else
+		if (opinf == 0x49 || opinf == 0x45 || opinf == 0x55 || opinf == 0x4D
+		 || opinf == 0x5D || opinf == 0x59 || opinf == 0x41 || opinf == 0x51) {
+
+			// *******
+			// * EOR *
+			// *******
+
+			// XOR Memory with accumulator, store in accumulator:
+			if (mode == "decompile") {
+				readout(accumulator + " XOR " + addr);
+			}
+			else {
+				readout("Exclusive OR (XOR) operation between " + addr + " and Accumulator (stored to Accumulator)");
+			}
+		}
+		else
+		if (opinf == 0xE6 || opinf == 0xF6 || opinf == 0xEE || opinf == 0xFE) {
+
+			// *******
+			// * INC *
+			// *******
+
+			// Increment memory by one:
+			readout(addr + " + 1");
+		}
+		else
+		if (opinf == 0xE8) {
+
+			// *******
+			// * INX *
+			// *******
+
+			// Increment index X by one:
+			if (mode == "decompile") {
+				readout(X + " + 1");
+			}
+			else {
+				readout("X-index + 1");
+			}
+		}
+		else
+		if (opinf == 0xC8) {
+
+			// *******
+			// * INY *
+			// *******
+
+			// Increment index Y by one:
+			
+			if (mode == "decompile") {
+				readout(Y + " + 1");
+			}
+			else {
+				readout("Y-index + 1");
+			}
+		}
+		else
+		if (opinf == 0x4C || opinf == 0x6C) {
+
+			// *******
+			// * JMP *
+			// *******
+
+			// Jump to new location:
+			
+			if (mode == "decompile") {
+				readout("Goto " + formatAddr());
+			}
+			else {
+				readout("Jump to instruction at " + formatAddr());
+			}
+			processing = false;
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0x20) {
+			// *******
+			// * JSR *
+			// *******
+
+			// Jump to new location, saving return address.
+			// Push return address on stack:
+			
+			if (mode == "decompile") {
+				readout("Call " + formatAddr());
+			}
+			else {				
+				readout("Call subroutine at " + formatAddr() + " (program counter address saved to stack)");
+			}
+			subsReadout += line;
+		}
+		else
+		if (opinf == 0xA9 || opinf == 0xA5 || opinf == 0xB5 || opinf == 0xAD
+		 || opinf == 0xBD || opinf == 0xB9 || opinf == 0xA1 || opinf == 0xB1) {
+
+			// *******
+			// * LDA *
+			// *******
+			
+			if (mode == "decompile") {
+				accumulator = addr;
+			}
+			else {
+				readout("Load " + addr + " into Accumulator");
+			}
+		}
+		else
+		if (opinf == 0xA2 || opinf == 0xA6 || opinf == 0xB6 || opinf == 0xAE
+		 || opinf == 0xBE) {
+
+			// *******
+			// * LDX *
+			// *******
+
+			// Load index X with memory:
+			if (mode == "decompile") {
+				X = addr;
+			}
+			else {
+				readout("Load " + addr + " into X-index");
+			}
+		}
+		else
+		if (opinf == 0xA0 || opinf == 0xA4 || opinf == 0xB4 || opinf == 0xAC
+		 || opinf == 0xBC) {
+
+			// *******
+			// * LDY *
+			// *******
+
+			// Load index Y with memory:
+			if (mode == "decompile") {
+				Y = addr;
+			}
+			else {
+				readout("Load " + addr + " into Y-index");
+			}
+		}
+		else
+		if (opinf == 0x4A || opinf == 0x46 || opinf == 0x56 || opinf == 0x4E
+		 || opinf == 0x5E) {
+
+			// *******
+			// * LSR *
+			// *******
+
+			// Shift right one bit:
+			if(addrMode == "accumulator"){ // ADDR_ACC
+
+				readout(accumulator + " >> 1");
+			}else{
+
+				readout("Shift " + addr + " right one bit");
+			}
+		}
+		else
+		if (opinf == 0xEA) {
+			// *******
+			// * NOP *
+			// *******
+
+			// No OPeration.
+			// Ignore.
+			if (mode != "decompile") readout("* no operation *");
+		}
+		else
+		if (opinf == 0x09 || opinf == 0x05 || opinf == 0x15 || opinf == 0x0D
+		 || opinf == 0x1D || opinf == 0x19 || opinf == 0x01 || opinf == 0x11) {
+
+			// *******
+			// * ORA *
+			// *******
+
+			// OR memory with accumulator, store in accumulator.
+			if (mode == "decompile") {
+				readout(accumulator + " OR " + addr);
+			}
+			else {
+				readout("OR operation between " + addr + " and Accumulator (stored to Accumulator)");
+			}
+		}
+		else
+		if (opinf == 0x48) {
+
+			// *******
+			// * PHA *
+			// *******
+
+			// Push accumulator on stack
+			if (mode == "decompile") {
+				readout("PUSH " + accumulator);
+			}
+			else {
+				readout("Save Accumulator to the stack");
+			}
+		}
+		else
+		if (opinf == 0x08) {
+			// *******
+			// * PHP *
+			// *******
+
+			// Push processor status on stack
+			if (mode == "decompile") {
+				readout("PUSH carry: PUSH overflow: PUSH decimal: PUSH interrupts");
+			}
+			else {
+				readout("Save CPU status to the stack");
+			}
+		}
+		else
+		if (opinf == 0x68) {
+			// *******
+			// * PLA *
+			// *******
+
+			// Pull accumulator from stack
+			//accumulator = stack.splice(stack.length - 1, 1);
+			readout("Read the bottom of the stack into the Accumulator");
+		}
+		else
+		if (opinf == 0x28) {
+
+			// *******
+			// * PLP *
+			// *******
+
+			// Pull processor status from stack
+			readout("Read the CPU status from the bottom of the stack");
+		}
+		else
+		if (opinf == 0x21 || opinf == 0x26 || opinf == 0x36 || opinf == 0x2E
+		 || opinf == 0x3E) {
+
+			// *******
+			// * ROL *
+			// *******
+
+			// Rotate one bit left
+			if(addrMode == 4){ // ADDR_ACC == 4
+
+				readout("Rotate Accumulator left one bit");
+
+			}else{
+
+				readout("Rotate " + addr + " left one bit");
+			}
+		}
+		else
+		if (opinf == 0x6A || opinf == 0x66 || opinf == 0x76 || opinf == 0x6E
+		 || opinf == 0x7E) {
+
+			// *******
+			// * ROR *
+			// *******
+
+			// Rotate one bit right
+			if(addrMode == "accumulator"){ // ADDR_ACC == 4
+
+			readout("Rotate Accumulator right one bit");
+
+			}else{
+			readout("Rotate " + addr + " right one bit");
+			}
+		}
+		else
+		if (opinf == 0x40) {
+
+			// *******
+			// * RTI *
+			// *******
+
+			// Return from interrupt. Pull status and PC from stack.
+			
+			readout("Return from interrupt; read CPU status regs and program counter address from the stack");
+			jumpsReadout += line;
+		}
+		else
+		if (opinf == 0x60) {
+
+			// *******
+			// * RTS *
+			// *******
+
+			// Return from subroutine. Pull PC from stack.
+			readout("Return from subroutine; read program counter address off the stack");
+			subsReadout += line;
+		}
+		else
+		if (opinf == 0xE9 || opinf == 0xE5 || opinf == 0xF5 || opinf == 0xED
+		 || opinf == 0xFD || opinf == 0xF9 || opinf == 0xE1 || opinf == 0xF1) {
+
+			// *******
+			// * SBC *
+			// *******
+			if (mode == "decompile") {
+				readout(accumulator + " - " + addr);
+			}
+			else {
+				readout("Subtract value at address " + addr + " from Accumulator");
+			}
+		}
+		else
+		if (opinf == 0x38) {
+
+			// *******
+			// * SEC *
+			// *******
+
+			// Set carry flag
+			if (mode == "decompile") {
+				readout("SET carry");
+			}
+			else {
+				readout("Set carry bit to 1");
+			}
+		}
+		else
+		if (opinf == 0xF8) {
+
+			// *******
+			// * SED *
+			// *******
+
+			// Set decimal mode
+			// Transfer index Y to accumulator:
+			accumulator = Y;
+			
+			if (mode == "decompile") {
+				readout("Decimals ON");
+			}
+			else {
+				readout("Set decimal mode bit to 1");
+			}
+		}
+		else
+		if (opinf == 0x78) {
+			// *******
+			// * SEI *
+			// *******
+
+			// Set interrupt disable status
+			if (mode == "decompile") {
+				readout("Interrupts OFF");
+			}
+			else {
+				readout("Disable interrupts");
+			}
+		}
+		else
+		if (opinf == 0x85 || opinf == 0x95 || opinf == 0x8D || opinf == 0x9D
+		 || opinf == 0x99 || opinf == 0x81 || opinf == 0x91) {
+			// *******
+			// * STA *
+			// *******
+			
+			// Store accumulator in memory
+			
+			checkForMapperWrite();
+			
+			if (mode == "decompile") {
+				readout(addr + " = " + accumulator);
+			}
+			else {
+				readout("Move Accumulator to " + addr);
+			}
+		}
+		else
+		if (opinf == 0x86 || opinf == 0x96 || opinf == 0x8E) {
+
+			// *******
+			// * STX *
+			// *******
+
+			// Store index X in memory
+			
+			checkForMapperWrite();
+			
+			if (mode == "decompile") {
+				readout(addr + " = " + X + " \'X");
+			}
+			else {
+				readout("Move X-index to " + addr);
+			}
+		}
+		else
+		if (opinf == 0x84 || opinf == 0x94 || opinf == 0x8C) {
+
+			// *******
+			// * STY *
+			// *******
+
+			// Store index Y in memory:
+			
+			checkForMapperWrite();
+			
+			if (mode == "decompile") {
+				readout(addr + " = " + Y + " \'Y");
+			}
+			else {
+				readout("Move Y-index to " + addr);
+			}
+		}
+		else
+		if (opinf == 0xAA) {
+
+			// *******
+			// * TAX *
+			// *******
+			
+			// Transfer accumulator to index X:
+			
+			X = accumulator;
+			if (mode == "decompile") {
+				readout("X = " + accumulator);
+			}
+			else {
+				readout("Move Accumulator to X-index");
+			}
+		}
+		else
+		if (opinf == 0xA8) {
+
+			// *******
+			// * TAY *
+			// *******
+
+			// Transfer accumulator to index Y:
+			
+			Y = accumulator;
+			if (mode == "decompile") {
+				readout("Y = " + accumulator);
+			}
+			else {
+				readout("Move Accumulator to Y-index");
+			}
+		}
+		else
+		if (opinf == 0xBA) {
+
+			// *******
+			// * TSX *
+			// *******
+
+			// Transfer stack pointer to index X:
+			readout("Move stack pointer address to X-index");
+		}
+		else
+		if (opinf == 0x8A) {
+
+			// *******
+			// * TXA *
+			// *******
+
+			// Transfer index X to accumulator:
+			
+			accumulator = X;
+			if (mode == "decompile") {
+				readout("X = " + accumulator);
+			}
+			else {
+				readout("Move X-index to Accumulator");
+			}
+		}
+		else
+		if (opinf == 0x9A) {
+
+			// *******
+			// * TXS *
+			// *******
+
+			// Transfer index X to stack pointer:
+			readout("Set stack pointer address to X-Index");
+		}
+		else
+		if (opinf == 0x98) {
+
+			// *******
+			// * TYA *
+			// *******
+
+			// Transfer index Y to accumulator:
+			accumulator = Y;
+			
+			if (mode == "decompile") {
+			}
+			else {
+				readout("Move Y-index to Accumulator");
+			}
+		}else{
+
+			// *******
+			// * ??? *
+			// *******
+			readout("* NOT A 6502 INSTRUCTION *");
+		}
+		
+		if (REG_PC >= progData.length) processing = false;
+	}
+	
+	ReadoutBox.innerHTML = output;
+	//alert(debug);
+}
+
+
+function load (mode) {
+
+	var prefix = 1;
+
+	if (mode == "immediate") {
+	
+		prefix = 0;
+		realAddr = progData.charCodeAt(REG_PC + 1);
+	}
+	else
+	if (mode == "zero_page") {
+	
+		realAddr = progData.charCodeAt(REG_PC + 1);
+	}
+	else
+	if (mode == "zero_page_w/X") {
+	
+		realAddr = progData.charCodeAt(REG_PC + 1);
+		suffix = ", X (" + X + ")";
+	}
+	else
+	if (mode == "zero_page_w/Y") {
+
+		realAddr = progData.charCodeAt(REG_PC + 1);
+		suffix = ", Y (" + Y + ")";
+	}
+	else
+	if (mode == "indirect") {
+
+		realAddr = progData.charCodeAt(REG_PC + 2) * 256 + progData.charCodeAt(REG_PC + 1);
+	}
+	else
+	if (mode == "indirect_w/X") {
+	
+		realAddr = progData.charCodeAt(REG_PC + 1);
+		suffix = ", X (" + X + ")";
+	}
+	else
+	if (mode == "indirect_w/Y") {
+
+		realAddr = progData.charCodeAt(REG_PC + 1);
+		suffix = ", Y (" + Y + ")";
+	}
+	else
+	if (mode == "absolute") {
+	
+		realAddr = progData.charCodeAt(REG_PC + 2) * 256 + progData.charCodeAt(REG_PC + 1);
+	}
+	else
+	if (mode == "absolute_w/X") {
+	
+		realAddr = progData.charCodeAt(REG_PC + 2) * 256 + progData.charCodeAt(REG_PC + 1);
+		suffix = ", X (" + X + ")";
+	}
+	else
+	if (mode == "absolute_w/Y") {
+	
+		realAddr = progData.charCodeAt(REG_PC + 2) * 256 + progData.charCodeAt(REG_PC + 1);
+		suffix = ", Y (" + Y + ")";
+	}
+	else
+	if (mode == "accumulator") {
+		addDescriptor("ACM");
+	}
+	else
+	if (mode == "relative") {
+	
+		//alert(REG_PC);
+		realAddr = progData.charCodeAt(REG_PC + 1)
+		if (realAddr > 127) {
+			realAddr -= 254;
+		}
+		
+		realAddr += REG_PC;
+	}
+	
+	//realAddr = realAddr & 0xFFFF; // wrap around
+	
+	if (prefix == 1) addr = "$";
+	addr += realAddr.toString(16) + "(" + realAddr + ")";
+		
+	if (realAddr == 0x2000) { // Picture Processor Control 1
+		addDescriptor("[Picture Processor Control 1]");
+	}
+	else
+	if (realAddr == 0x2001) { // Picture Processor Control 2
+		addDescriptor("[Picture Processor Control 2]");
+	}
+	else
+	if (realAddr == 0x2002) { // Picture Processor 1 status
+		addDescriptor("[Picture Processor Status]");
+	}
+	else
+	if (realAddr == 0x2003) { // Sprite RAM address write
+		addDescriptor("[Sprite RAM address]");
+		SpriteRamAddr = accumulator;
+	}
+	else
+	if (realAddr == 0x2004) { // Sprite RAM write
+		addDescriptor("[Sprite RAM," + SpriteRamAddr + "]");
+	}
+	else
+	if (realAddr == 0x2005) { // VRAM Address 1
+		addDescriptor("[VRAM Scroller]");
+	}
+	else
+	if (realAddr == 0x2006) { // VRAM Address 2
+		addDescriptor("[VRAM address]");
+		VRAMAddr = accumulator;
+	}
+	else
+	if (realAddr == 0x2007) { // VRAM write
+		addDescriptor("[VRAM." + VRAMAddr + "]");
+	}
+	else
+	if (realAddr == 0x4000) { // Pulse Wave #1 Control
+		addDescriptor("[Pulse Wave #1 Control]");
+	}
+	else
+	if (realAddr == 0x4001) { // Pulse Wave #1 Ramp
+		addDescriptor("[Pulse Wave #1 Ramp]");
+	}
+	else
+	if (realAddr == 0x4002) { // Pulse Wave #1 Fine Tune
+		addDescriptor("[Pulse Wave #1 Fine Tune]");
+	}
+	else
+	if (realAddr == 0x4003) { // Pulse Wave #1 Coarse Tune
+		addDescriptor("[Pulse Wave #1 Coarse Tune]");
+	}
+	else
+	if (realAddr == 0x4004) { // Pulse Wave #2 Control
+		addDescriptor("[Pulse Wave #2 Control]");
+	}
+	else
+	if (realAddr == 0x4005) { // Pulse Wave #2 Ramp
+		addDescriptor("[Pulse Wave #2 Ramp]");
+	}
+	else
+	if (realAddr == 0x4006) { // Pulse Wave #2 Fine Tune
+		addDescriptor("[Pulse Wave #2 Fine Tune]");
+	}
+	else
+	if (realAddr == 0x4007) { // Pulse Wave #2 Coarse Tune
+		addDescriptor("[Pulse Wave #2 Coarse Tune]");
+	}
+	else
+	if (realAddr == 0x4008) { // APU Triangle Control
+		addDescriptor("[Bass Control]");
+	}
+	else
+	if (realAddr == 0x4009) { // APU Triangle Control 2
+		addDescriptor("[Bass Control 2]");
+	}
+	else
+	if (realAddr == 0x400A) { // APU Triangle Frequency
+		addDescriptor("[Bass Frequency]");
+	}
+	else
+	if (realAddr == 0x400B) { // APU Triangle Frequency 2
+		addDescriptor("[Bass Frequency 2]");
+	}
+	else
+	if (realAddr == 0x400C) { // APU Noise Control
+		addDescriptor("[Noise Control]");
+	}
+	else
+	if (realAddr == 0x400D) { // APU ???
+		addDescriptor("[APU ???]");
+	}
+	else
+	if (realAddr == 0x400E) { // APU Noise Frequency
+		addDescriptor("[Noise Frequency]");
+	}
+	else
+	if (realAddr == 0x400F) { // APU Noise Frequency 2
+		addDescriptor("[Noise Frequency 2]");
+	}
+	else
+	if (realAddr == 0x4010) { // APU Pitch Modulator
+		addDescriptor("[Pitch Modulator]");
+	}
+	else
+	if (realAddr == 0x4011) { // APU Pitch Modulator D/A
+		addDescriptor("[Pitch Modulator D/A]");
+	}
+	else
+	if (realAddr == 0x4012) { // APU Pitch Modulator
+		addDescriptor("[Pitch Modulator address]");
+	}
+	else
+	if (realAddr == 0x4013) { // APU Pitch Modulator data length
+		addDescriptor("[Pitch Modulator data length]");
+	}
+	else
+	if (realAddr == 0x4014) { // Sprite DMA
+		addDescriptor("[Sprite Loader]");
+	}
+	else
+	if (realAddr == 0x4015) { // APU Sound/Clock Signal
+		addDescriptor("[APU Sound/Clock Signal]");
+	}
+	else
+	if (realAddr == 0x4016) { // Control Pad 1 / Expansion Slot
+		addDescriptor("[Control Pad 1 / Expansion Slot]");
+	}
+	else
+	if (realAddr == 0x4017) { // Control Pad 2 / Expansion Slot
+		addDescriptor("[Control Pad 2 / Expansion Slot]");
+	}
+	else {
+		/*if (realAddr > 0x8000) { // Let's get the bank
+	
+			bank = Math.floor(REG_PC / 65536);
+			bankStart = bank * 65536;
+			ROMAddr = bankStart + realAddr; // find the location in ROM being pointed to
+			addDescriptor("[ROM @" + ROMAddr + ", bank " + bank + "]");
+		}*/
+			
+		/*for (index in userDocAddresses) {
+		
+			if (userDocAddresses[index].address == realAddr) {
+				addDescriptor(userDocAddresses[index].label);
+				break;
+			}
+		}*/
+	}
+	
+	if (mode == "accumulator") {
+		addr = "[Accumulator] ";
+	}
+
+	addrMode = mode;
+	
+}
+
+
+function formatAddr () {
+
+	return "$" + realAddr.toString(16) + "|" + realAddr;
+}
+
+
+function addDescriptor (descriptor) {
+
+	addr += " " + descriptor;
+}
+
+
+function checkForMapperWrite () {
+
+/*	var mapper = mappers[selectedMapper];
+	
+	for (index in mapper) {
+	
+		if (mapper[index].address == realAddr) {
+		
+			mapperDescription = mapper[index].label;
+		
+			addr = realAddr + addDescriptor(mapperDescription);
+			processMapper(realAddr);
+		}
+	
+	}*/
+	
+}
+
+
+function readout (text) {
+
+	line += ": " + text + "\n";
+	output += line;
+//	lines.push(line);
+}
+
+
+function parseLabels (data) {
+
+	var lines = data.split("\n");
+	
+	for (var index in lines) {
+		label = lines[index].split(":");
+		labels[index] = { address: label[0], name: label[1] };
+	}
+	
+}
+
+
+</script>
+</head>
+<form id="GUIForm">
+<table><tr><td>
+<div style="text-align: top">ROM data<span style="float: right">
+<input id="ROMLoadButton" type="button" value="Load ROM"
+onclick="readHeader();"></span>
+<br><textarea id="SourceBox" cols=20 rows=10></textarea></td>
+<td>Address Labels<span style="float: right"><input type="button" value="Load" onclick="
+UserDocBox.value = openFile('txt');
+"></span><span style="float: right"><input type="button" value="Save" onclick="
+saveFile(UserDocBox.value, 'txt');
+"></span><br>
+<textarea id="UserDocBox" cols=40 rows=10></textarea></td></tr></table>
+Prog Banks<input id="ProgBanks" size=4> Char Banks<input id="CharBanks" size=3> Mapper<input id="Mapper" size=3>
+4x VRAM<input id="VRAM4x" type="checkbox"> Trainer<input id="Trainer" type="checkbox">
+Battery<input id="Battery" type="checkbox">
+v-Mirror<input id="VMirror" type="checkbox"> H-Mirror<input id="HMirror" type="checkbox"><br>
+Program start: <input id="ProgramStartAddress" size=4 value="" >
+<script>ProgramStartAddress.value = "";</script>
+&nbsp; Mode |
+<input type="radio" name="outputMode"
+onchange="if (this.checked) mode = 'none';"> Normal
+<input type="radio" name="outputMode" onchange="if (this.checked) mode = 'decompile';"> Decompile
+<br>
+Read from <input id="Start" type="text" size=4 value="">
+<!--to <input id="End" type="text" size=4 value=""--> <input id="StartButton" type="button" value="Start" onclick="naturalizeCode();">
+</div>
+</td></tr></table><br>
+Natural code |
+<!--span style="cursor: pointer; text-decoration: underline" onclick="alert('OK')"-->
+<input type="radio" name="view" onchange="if (this.checked) ReadoutBox.innerHTML = output;">All
+<input type="radio" name="view" onchange="if (this.checked) ReadoutBox.innerHTML = subsReadout;">Subs
+<input type="radio" name="view" onchange="if (this.checked) ReadoutBox.innerHTML = jumpsReadout;">Jumps
+| 
+<span style="float: right"><input type="button" value="Save" onclick="
+saveFile(ReadoutBox.innerHTML, 'txt');
+"></span><br><pre style="width: 600px; height: 260px; overflow: auto; border: 1px solid black; float: left;" id="ReadoutBox"></pre><!--<tr>
+<td>Notes<br><textarea id="NotesBox"></textarea></td>
+<td>CPU status<br><textarea id="RegsStatusBox"></textarea></td>
+</tr>-->
+</form>
+<script>GUIForm.reset()</script>
+
